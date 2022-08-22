@@ -1,0 +1,122 @@
+---
+title: "Lung_Digest"
+author: "Mark Snyder"
+date: "8/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Packages utilized in this analysis
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(ggrepel)
+library(scProportionTest)
+library(EnhancedVolcano)
+```
+
+
+Loading rds
+```{r}
+pathway <- "/Users/MES374/Documents/2021_Digest/combined.lung.named.rds"
+digest <- readRDS(pathway)
+```
+##See additional code for the pre-processing and creation of this rds
+Explore data: 
+head(digest@meta.data, 5)
+DimPlot(digest, reduction = "umap")
+DimPlot(digest, reduction = "umap", group.by = "hash.ID")
+
+
+Assigning protocol based on HTO
+```{r}
+digest$cat <- plyr::mapvalues(
+  x = digest$hash.ID, 
+  from = c("HTO-1-lung4", "HTO-2-lung4", "HTO-3-lung4", "HTO-5-lung4", "HTO-3-lung", "Negative"), 
+  to = c("Protocol_A", "Protocol_A", "Protocol_A", "Protocol_A", "Protocol_B", "Protocol_B")
+)
+```
+
+Testing population proportion based on protocol
+```{r}
+digest$CellType <- Idents(digest)
+
+prop_test <- sc_utils(digest)
+
+prop_test <- permutation_test(
+  prop_test, cluster_identity = "CellType",
+  sample_1 = "immune cell enriched", sample_2 = "epithelial cell enriched",
+  sample_identity = "lung.ident"
+)
+
+permutation_plot(prop_test)
+```
+
+
+Subsetting T cells
+```{r}
+#Subset T cells
+digest_CD3 <- subset(digest, subset = CD8A > 0.5)
+digest_CD3 <- subset(digest_CD3, subset = LYZ < 0.5)
+digest_CD3 <- subset(digest_CD3, subset = SFTPC < 2)
+digest_CD3 <- subset(digest_CD3, subset = HBB < 0.8)
+
+Idents(digest_CD3) <- "lung.ident"
+```
+
+
+Volcano Plot for T cells
+```{r}
+dig.response <- FindMarkers(digest_CD3, ident.1 = "immune cell enriched", ident.2 = "epithelial cell enriched", verbose = FALSE)
+
+EnhancedVolcano(dig.response , 
+                rownames(dig.response),
+                x ="avg_log2FC", 
+                y ="p_val_adj", 
+                xlim = c(-2, 2),
+                ylim = c(0,15),
+                FCcutoff = 0.8,
+                title = "T cell subset", 
+                subtitle = "Protocol 5 vs 3")
+
+```
+
+
+Subset Myeloid cells
+```{r}
+#Subset Myeloid
+digest_M <- subset(digest, subset = LYZ > 0.5)
+digest_M <- subset(digest_M, subset = CD68 > 0.5)
+digest_M <- subset(digest_M, subset = CD8A < 2)
+digest_M <- subset(digest_M, subset = CD3E < 2)
+digest_M <- subset(digest_M, subset = HBB < 0.8)
+digest_M <- subset(digest_M, subset = SFTPC < 0.8)
+
+Idents(digest_M) <- "lung.ident"
+```
+
+
+Myeloid Volcano Plot
+```{r}
+digM.response <- FindMarkers(digest_M, ident.1 = "immune cell enriched", ident.2 = "epithelial cell enriched", verbose = FALSE)
+
+
+EnhancedVolcano(digM.response , 
+                rownames(digM.response),
+                x ="avg_log2FC", 
+                y ="p_val_adj", 
+                xlim = c(-2, 2),
+                ylim = c(0,30),
+                FCcutoff = 0.8,
+                title = "Myeloid Subset", 
+                subtitle = "Protocol 5 vs 3")
+```
+
+

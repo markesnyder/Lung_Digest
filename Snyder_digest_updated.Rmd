@@ -1,0 +1,308 @@
+---
+title: "Lung_Digest"
+author: "Mark Snyder"
+date: "8/22/2022"
+output: html_document
+---
+
+Packages utilized in this analysis
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(ggrepel)
+library(scProportionTest)
+library(EnhancedVolcano)
+library(ggpubr)
+```
+
+
+Preparing samples, HTO Demux, merge
+```{r}
+#From Chen Lab
+HTO_L <- Read10X(data.dir = "/Users/loubean/single cell/data/HTO L and 4/filtered_feature_bc_matrix_L")
+pbmc.umis <- HTO_L[["Gene Expression"]]
+ADT <- HTO_L[["Antibody Capture"]]
+adtmatrix <- as.matrix(ADT)
+pbmc.htos <- adtmatrix
+rownames(pbmc.htos) <- c("HTO_4-lung1", "HTO_4-lung2", "HTO_4-lung3", "HTO_4-lung4")
+rownames(pbmc.htos)
+
+joint.bcs <- intersect(colnames(pbmc.umis), colnames(pbmc.htos))
+pbmc.umis <- pbmc.umis[, joint.bcs]
+pbmc.htos <- as.matrix(pbmc.htos[, joint.bcs])
+
+hto.l <- CreateSeuratObject(counts = pbmc.umis, project = "hto.l", min.cells = 3, min.features = 200)
+
+
+hto.l <- NormalizeData(hto.l)
+hto.l <- FindVariableFeatures(hto.l, selection.method = "mean.var.plot")
+hto.l <- ScaleData(hto.l, features = VariableFeatures(hto.l))
+hto.l[["HTO"]] <- CreateAssayObject(counts = pbmc.htos[, colnames(hto.l)])
+
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation
+hto.l <- NormalizeData(hto.l, assay = "HTO", normalization.method = "CLR")
+
+#Demultiplex cells based on HTO enrichment
+hto.l <- HTODemux(hto.l, assay = "HTO", positive.quantile = 0.99)
+
+hto.l <- RunPCA(hto.l, features = rownames(hto.l), approx = FALSE)
+hto.l <- RunUMAP(hto.l, reduction = "pca", dims = 1:20)
+
+Idents(hto.l) <- "HTO_maxID"
+RidgePlot(hto.l, assay = "HTO", features = rownames(hto.l[["HTO"]])[1:4], ncol = 4)
+Idents(hto.l) <- "https://urldefense.com/v3/__http://HTO_classification.global__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXgxG1Whtj$  "
+VlnPlot(hto.l, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+
+
+#get singlet
+hto.l.subset <- subset(hto.l, idents = "Negative", invert = TRUE)
+DefaultAssay(hto.l.subset) <- "HTO"
+hto.l.subset <- ScaleData(hto.l.subset, features = rownames(hto.l.subset), 
+                          verbose = FALSE)
+hto.l.subset <- RunPCA(hto.l.subset, features = rownames(hto.l.subset), approx = FALSE)
+hto.l.subset <- RunTSNE(hto.l.subset, dims = 1:3, perplexity = 100, check_duplicates = FALSE)
+hto.l.subset <- RunUMAP(hto.l.subset, reduction = "pca", dims = 1:20)
+DimPlot(hto.l.subset)
+HTOHeatmap(hto.l, assay = "HTO", ncells = 5000)
+
+#Cluster and visualize cells using the usual scRNA-seq workflow, and examine for the potential presence of batch effects.
+hto.l.singlet <- subset(hto.l, idents = "Singlet")
+hto.l.singlet [["https://urldefense.com/v3/__http://percent.mt__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg2uGWhig$  "]] <- PercentageFeatureSet(hto.l.singlet, pattern = "^mt-") 
+
+hto.l.singlet <- subset(hto.l.singlet, subset = nFeature_RNA > 200 & nFeature_RNA < 30000 & https://urldefense.com/v3/__http://percent.mt__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg2uGWhig$   < 40)
+
+#adjust the range depending on the VlnPlot
+hto.l.singlet <- NormalizeData(hto.l.singlet)
+hto.l.singlet <- FindVariableFeatures(hto.l.singlet, selection.method = "vst", nfeatures = 2000)
+hto.l.singlet <- ScaleData(hto.l.singlet, features = rownames(hto.l.singlet))
+hto.l.singlet <- RunPCA(hto.l.singlet, features = VariableFeatures(object = hto.l.singlet))
+hto.l.singlet <- JackStraw(hto.l.singlet, num.replicate = 100, dims = 50)
+hto.l.singlet <- ScoreJackStraw(hto.l.singlet, dims = 1:50)  
+JackStrawPlot(hto.l.singlet, dims = 1:50)
+ElbowPlot(hto.l.singlet, ndims = 50)
+hto.l.singlet <- RunUMAP(hto.l.singlet, dims = 1:15, perplexity = 100, check_duplicates = FALSE)
+hto.l.singlet <- FindNeighbors(hto.l.singlet, reduction = "pca", dims = 1:15)
+hto.l.singlet <- FindClusters(hto.l.singlet, resolution = 0.07, verbose = FALSE)
+DimPlot(hto.l.singlet, reduction = "umap", label = "T")
+
+
+hto.l.singlet.markers <- FindAllMarkers(hto.l.singlet, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10 <- hto.l.singlet.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top50 <- hto.l.singlet.markers %>% group_by(cluster) %>% top_n(n = 50, wt = avg_log2FC)
+DoHeatmap(hto.l.singlet, features = top10$gene) + NoLegend()
+
+saveRDS(hto.l.singlet, file = "/home/loubean/single cell/data/three patients/patients.pre.rds")
+hto.l.singlet <- readRDS("Users/loubean/single cell/data/three patients/hto.l.singlet.new.rds")
+
+
+
+#------------HTO 4---------------
+HTO_4 <- Read10X(data.dir = "/Users/loubean/single cell/data/HTO L and 4/filtered_feature_bc_matrix_4")
+pbmc.umis <- HTO_4[["Gene Expression"]]
+ADT <- HTO_4[["Antibody Capture"]]
+adtmatrix <- as.matrix(ADT)
+pbmc.htos <- adtmatrix
+rownames(pbmc.htos) <- c("HTO_lung_HLN", "HTO_lung_MLN", "HTO_lung_lung1", "HTO_lung_PBMC")
+rownames(pbmc.htos)
+
+joint.bcs <- intersect(colnames(pbmc.umis), colnames(pbmc.htos))
+pbmc.umis <- pbmc.umis[, joint.bcs]
+pbmc.htos <- as.matrix(pbmc.htos[, joint.bcs])
+
+hto.4 <- CreateSeuratObject(counts = pbmc.umis, project = "hto.4", min.cells = 3, min.features = 200)
+hto.4 <- NormalizeData(hto.4)
+hto.4 <- FindVariableFeatures(hto.4, selection.method = "mean.var.plot")
+hto.4 <- ScaleData(hto.4, features = VariableFeatures(hto.4))
+hto.4[["HTO"]] <- CreateAssayObject(counts = pbmc.htos[, colnames(hto.4)])
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation
+hto.4 <- NormalizeData(hto.4, assay = "HTO", normalization.method = "CLR")
+#Demultiplex cells based on HTO enrichment
+hto.4 <- HTODemux(hto.4, assay = "HTO", positive.quantile = 0.99)
+
+hto.4 <- RunPCA(hto.4, features = rownames(hto.4), approx = FALSE)
+#hto.4 <- RunTSNE(hto.4, dims = 1:3, perplexity = 100, check_duplicates = FALSE)
+hto.4 <- RunUMAP(hto.4, reduction = "pca", dims = 1:20)
+DimPlot(hto.4, https://urldefense.com/v3/__http://group.by__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg8z666jk$   = "https://urldefense.com/v3/__http://HTO_classification.global__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXgxG1Whtj$  ")
+
+Idents(hto.4) <- "HTO_maxID"
+RidgePlot(hto.4, assay = "HTO", features = rownames(hto.4[["HTO"]])[1:4], ncol = 4)
+#FeatureScatter(hto.4, feature1 = "HTO-1-MT", feature2 = "HTO-2-CT")
+Idents(hto.4) <- "https://urldefense.com/v3/__http://HTO_classification.global__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXgxG1Whtj$  "
+VlnPlot(hto.4, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+
+
+#get singlet
+hto.4.subset <- subset(hto.4, idents = "Negative", invert = TRUE)
+DefaultAssay(hto.4.subset) <- "HTO"
+hto.4.subset <- ScaleData(hto.4.subset, features = rownames(hto.4.subset), 
+                          verbose = FALSE)
+hto.4.subset <- RunPCA(hto.4.subset, features = rownames(hto.4.subset), approx = FALSE)
+hto.4.subset <- RunTSNE(hto.4.subset, dims = 1:3, perplexity = 100, check_duplicates = FALSE)
+hto.4.subset <- RunUMAP(hto.4.subset, reduction = "pca", dims = 1:20)
+DimPlot(hto.4.subset)
+HTOHeatmap(hto.4, assay = "HTO", ncells = 5000)
+
+#Cluster and visualize cells using the usual scRNA-seq workflow, and examine for the potential presence of batch effects.
+hto.4.singlet <- subset(hto.4, idents = "Singlet")
+hto.4.singlet [["https://urldefense.com/v3/__http://percent.mt__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg2uGWhig$  "]] <- PercentageFeatureSet(hto.4.singlet, pattern = "^mt-") 
+VlnPlot(hto.4.singlet, features = c("nFeature_RNA", "nCount_RNA", "https://urldefense.com/v3/__http://percent.mt__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg2uGWhig$  "), ncol = 3)
+hto.4.singlet <- subset(hto.4.singlet, subset = nFeature_RNA > 200 & nFeature_RNA < 30000 & https://urldefense.com/v3/__http://percent.mt__;!!NHLzug!KhVY7vgwYziLeMYDkIVGJ2A9DdmdINFH14HzHUAEqGOLLkzzUERNk14lZ9e6uoImxEgdZfkXg2uGWhig$   < 40)#adjust the range depending on the VlnPlot
+hto.4.singlet <- NormalizeData(hto.4.singlet)
+hto.4.singlet <- FindVariableFeatures(hto.4.singlet, selection.method = "vst", nfeatures = 2000)
+hto.4.singlet <- ScaleData(hto.4.singlet, features = rownames(hto.4.singlet))
+hto.4.singlet <- RunPCA(hto.4.singlet, features = VariableFeatures(object = hto.4.singlet))
+hto.4.singlet <- JackStraw(hto.4.singlet, num.replicate = 100, dims = 50)
+hto.4.singlet <- ScoreJackStraw(hto.4.singlet, dims = 1:50)  
+JackStrawPlot(hto.4.singlet, dims = 1:50)
+ElbowPlot(hto.4.singlet, ndims = 50)
+hto.4.singlet <- RunUMAP(hto.4.singlet, dims = 1:15, perplexity = 100, check_duplicates = FALSE)
+hto.4.singlet <- FindNeighbors(hto.4.singlet, reduction = "pca", dims = 1:15)
+hto.4.singlet <- FindClusters(hto.4.singlet, resolution = 0.07, verbose = FALSE)
+DimPlot(hto.4.singlet, reduction = "umap", label = "T")
+
+
+hto.4.singlet.markers <- FindAllMarkers(hto.4.singlet, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10 <- hto.4.singlet.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top50 <- hto.4.singlet.markers %>% group_by(cluster) %>% top_n(n = 50, wt = avg_log2FC)
+DoHeatmap(hto.4.singlet, features = top10$gene) + NoLegend()
+
+saveRDS(hto.4.singlet, file = "/home/loubean/single cell/data/three patients/patients.pre.rds")
+hto.4.singlet <- readRDS("/home/loubean/single cell/data/three patients/hto.4.singlet.new.rds")
+
+
+#-------------raw merge-----------
+combined <- merge(hto.4, hto.l)
+saveRDS(combined, file = "/Users/loubean/single cell/data/HTO L and 4/raw.combined.rds")
+combined <- readRDS("/Users/loubean/single cell/data/HTO L and 4/raw.combined.rds")
+
+
+DefaultAssay(combined) <- "HTO"
+combined.sub <- subset(combined, features = c("HTO-4-lung1", "HTO-4-lung2", "HTO-4-lung3", "HTO-4-lung4", "HTO-lung-lung1"))
+combined.sub[["RNA"]] <- CreateAssayObject(counts = combined@assays$RNA@counts[, colnames(combined)])
+```
+
+
+Loading rds
+```{r}
+pathway <- "/Users/MES374/Documents/2021_Digest/combined.lung.named.rds"
+digest <- readRDS(pathway)
+```
+##See additional code for the pre-processing and creation of this rds
+Explore data: 
+head(digest@meta.data, 5)
+DimPlot(digest, reduction = "umap")
+DimPlot(digest, reduction = "umap", group.by = "hash.ID")
+
+
+Assigning protocol based on HTO
+```{r}
+digest$cat <- plyr::mapvalues(
+  x = digest$hash.ID, 
+  from = c("HTO-1-lung4", "HTO-2-lung4", "HTO-3-lung4", "HTO-5-lung4", "HTO-3-lung", "Negative"), 
+  to = c("Protocol_A", "Protocol_A", "Protocol_A", "Protocol_A", "Protocol_B", "Protocol_B")
+)
+```
+
+Figure 6A - UMAP split by protocol
+```{r}
+fig6A <- DimPlot(digest, split.by = 'cat')
+```
+
+Figure 6B - Testing population proportion based on protocol
+```{r}
+digest$CellType <- Idents(digest)
+
+prop_test <- sc_utils(digest)
+
+prop_test <- permutation_test(
+  prop_test, cluster_identity = "CellType",
+  sample_1 = "immune cell enriched", sample_2 = "epithelial cell enriched",
+  sample_identity = "lung.ident"
+)
+
+fig6B <- permutation_plot(prop_test)
+```
+
+
+Subsetting T cells
+```{r}
+#Subset T cells
+digest_CD3 <- subset(digest, subset = CD8A > 0.5)
+digest_CD3 <- subset(digest_CD3, subset = LYZ < 0.5)
+digest_CD3 <- subset(digest_CD3, subset = SFTPC < 2)
+digest_CD3 <- subset(digest_CD3, subset = HBB < 0.8)
+
+Idents(digest_CD3) <- "lung.ident"
+```
+
+
+Figure 6C - Volcano Plot for T cells
+```{r}
+dig.response <- FindMarkers(digest_CD3, ident.1 = "immune cell enriched", ident.2 = "epithelial cell enriched", verbose = FALSE)
+
+fig6C <- EnhancedVolcano(dig.response , 
+                rownames(dig.response),
+                x ="avg_log2FC", 
+                y ="p_val_adj", 
+                xlim = c(-2, 2),
+                ylim = c(0,15),
+                FCcutoff = 0.8,
+                boxedLabels = TRUE,
+                labFace = 'bold',
+                colAlpha = 1,
+                pointSize = 4,
+                drawConnectors = TRUE,
+                widthConnectors = 1.0,
+                colConnectors = 'black',
+                title = "T cell subset", 
+                subtitle = "Protocol 5 vs 3")
+
+```
+
+
+Subset Myeloid cells
+```{r}
+#Subset Myeloid
+digest_M <- subset(digest, subset = LYZ > 0.5)
+digest_M <- subset(digest_M, subset = CD68 > 0.5)
+digest_M <- subset(digest_M, subset = CD8A < 2)
+digest_M <- subset(digest_M, subset = CD3E < 2)
+digest_M <- subset(digest_M, subset = HBB < 0.8)
+digest_M <- subset(digest_M, subset = SFTPC < 0.8)
+
+Idents(digest_M) <- "lung.ident"
+```
+
+
+Figure 6D - Myeloid Volcano Plot
+```{r}
+digM.response <- FindMarkers(digest_M, ident.1 = "immune cell enriched", ident.2 = "epithelial cell enriched", verbose = FALSE)
+
+
+fig6D <- EnhancedVolcano(digM.response , 
+                rownames(digM.response),
+                x ="avg_log2FC", 
+                y ="p_val_adj", 
+                xlim = c(-2, 2),
+                ylim = c(0,30),
+                FCcutoff = 0.8,
+                boxedLabels = TRUE,
+                labFace = 'bold',
+                colAlpha = 1,
+                pointSize = 4,
+                drawConnectors = TRUE,
+                widthConnectors = 1.0,
+                colConnectors = 'black',
+                title = "Myeloid subset", 
+                subtitle = "Protocol 5 vs 3")
+```
+
+
+Completing final Figure 6 (later font changes made in Adobe Illustrator)
+```{r}
+figure6 <- ggarrange(fig6A, fig6B, fig6C, fig6D, 
+          labels = c("A","B","C","D"),
+          ncol = 2, nrow = 2)
+```
